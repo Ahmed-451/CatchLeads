@@ -8,18 +8,23 @@
     "start": "next start",
     "lint": "next lint",
     "test:imap": "tsx scripts/test-imap.ts",
-    "test:db": "tsx scripts/test-db.ts"
+    "test:db": "tsx scripts/test-db.ts",
+    "test:llm": "tsx scripts/test-llm.ts"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
+    "groq-sdk": "^1.6.0",
     "imapflow": "^1.0.186",
     "mailparser": "^3.7.2",
     "next": "14.2.15",
+    "nodemailer": "^6.9.16",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/mailparser": "^3.4.5",
+    "@types/nodemailer": "^6.4.16",
     "@types/node": "^20.16.11",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
