@@ -19,6 +19,14 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function logDbWriteFailure(subject: string, operation: string, error: unknown): void {
+  console.error(`DB WRITE FAILED for ${subject} during ${operation}: ${errorMessage(error)}`, error);
+}
+
 /**
  * Imports unread messages, then processes every email waiting in the `new`
  * state. Re-running this route is safe: message_id prevents duplicate rows and
@@ -42,24 +50,34 @@ export async function POST() {
 
   // Persist first, so a later failure can be resumed on the next sync run.
   for (const email of unreadEmails) {
-    await insertEmail({
-      message_id: email.messageId,
-      from_address: email.from,
-      subject: email.subject,
-      // This preserves enough context for classification and reply drafting.
-      body_snippet: email.body.slice(0, BODY_SNIPPET_LENGTH),
-      received_at: email.receivedAt,
-    });
+    try {
+      await insertEmail({
+        message_id: email.messageId,
+        from_address: email.from,
+        subject: email.subject,
+        // This preserves enough context for classification and reply drafting.
+        body_snippet: email.body.slice(0, BODY_SNIPPET_LENGTH),
+        received_at: email.receivedAt,
+      });
+    } catch (error) {
+      logDbWriteFailure(email.subject, "insertEmail", error);
+    }
   }
 
   let classified = 0;
   let leadsFound = 0;
-  const emailsToClassify = (await getAllEmails()).filter(
-    (email) =>
-      email.status === "new" ||
-      // Retry only the explicit Gemini fallback on a later sync, never a valid classification.
-      (email.status === "classified" && email.reasoning === "classification failed"),
-  );
+  let emailsToClassify;
+  try {
+    emailsToClassify = (await getAllEmails()).filter(
+      (email) =>
+        email.status === "new" ||
+        // Retry only the explicit LLM fallback on a later sync, never a valid classification.
+        (email.status === "classified" && email.reasoning === "classification failed"),
+    );
+  } catch (error) {
+    console.error(`DB READ FAILED while loading sync queue: ${errorMessage(error)}`, error);
+    return NextResponse.json({ error: "Unable to load persisted emails for processing." }, { status: 500 });
+  }
   let hasAttemptedClassification = false;
 
   // Process serially to make API usage predictable and to isolate failures.
@@ -70,7 +88,12 @@ export async function POST() {
       }
       hasAttemptedClassification = true;
       const classification = await classifyEmail(email.subject, email.body_snippet);
-      await updateEmailClassification(email.id, classification);
+      try {
+        await updateEmailClassification(email.id, classification);
+      } catch (error) {
+        logDbWriteFailure(email.subject, "updateEmailClassification", error);
+        continue;
+      }
       classified += 1;
 
       console.log(
@@ -94,11 +117,21 @@ export async function POST() {
 
         // A lead still needs human review if Gemini could not produce a draft.
         if (draft) {
-          await updateEmailDraft(email.id, draft);
+          try {
+            await updateEmailDraft(email.id, draft);
+          } catch (error) {
+            logDbWriteFailure(email.subject, "updateEmailDraft", error);
+            continue;
+          }
         } else {
           console.warn(`No draft generated for lead: ${email.subject}`);
         }
-        await updateEmailStatus(email.id, "pending_approval");
+        try {
+          await updateEmailStatus(email.id, "pending_approval");
+        } catch (error) {
+          logDbWriteFailure(email.subject, "updateEmailStatus", error);
+          continue;
+        }
       }
     } catch (error) {
       // Continue so one bad email cannot abort the rest of the mailbox sync.

@@ -58,10 +58,20 @@ function getClient(): Client {
   return client;
 }
 
-/** Runs once per server process; Turso retains the created table permanently. */
-async function ensureSchema(): Promise<void> {
-  if (!schemaInitialization) schemaInitialization = getClient().execute(CREATE_EMAILS_TABLE).then(() => undefined);
-  await schemaInitialization;
+/**
+ * All database operations await this one shared initialization promise. If the
+ * first network attempt fails, clear the cached rejection so a later request
+ * can retry instead of leaving this server process permanently unusable.
+ */
+function ensureSchema(): Promise<void> {
+  if (!schemaInitialization) {
+    const initialization = getClient().execute(CREATE_EMAILS_TABLE).then(() => undefined);
+    schemaInitialization = initialization;
+    void initialization.catch(() => {
+      if (schemaInitialization === initialization) schemaInitialization = null;
+    });
+  }
+  return schemaInitialization;
 }
 
 function asString(value: unknown): string { return typeof value === "string" ? value : ""; }
