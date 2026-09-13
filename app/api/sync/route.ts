@@ -42,7 +42,7 @@ export async function POST() {
 
   // Persist first, so a later failure can be resumed on the next sync run.
   for (const email of unreadEmails) {
-    insertEmail({
+    await insertEmail({
       message_id: email.messageId,
       from_address: email.from,
       subject: email.subject,
@@ -54,7 +54,7 @@ export async function POST() {
 
   let classified = 0;
   let leadsFound = 0;
-  const emailsToClassify = getAllEmails().filter(
+  const emailsToClassify = (await getAllEmails()).filter(
     (email) =>
       email.status === "new" ||
       // Retry only the explicit Gemini fallback on a later sync, never a valid classification.
@@ -70,7 +70,7 @@ export async function POST() {
       }
       hasAttemptedClassification = true;
       const classification = await classifyEmail(email.subject, email.body_snippet);
-      updateEmailClassification(email.id, classification);
+      await updateEmailClassification(email.id, classification);
       classified += 1;
 
       console.log(
@@ -94,11 +94,11 @@ export async function POST() {
 
         // A lead still needs human review if Gemini could not produce a draft.
         if (draft) {
-          updateEmailDraft(email.id, draft);
+          await updateEmailDraft(email.id, draft);
         } else {
           console.warn(`No draft generated for lead: ${email.subject}`);
         }
-        updateEmailStatus(email.id, "pending_approval");
+        await updateEmailStatus(email.id, "pending_approval");
       }
     } catch (error) {
       // Continue so one bad email cannot abort the rest of the mailbox sync.

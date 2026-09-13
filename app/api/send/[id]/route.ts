@@ -54,7 +54,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     return NextResponse.json({ error: "body must be a string." }, { status: 400 });
   }
 
-  const email = getEmailById(id);
+  const email = await getEmailById(id);
   if (!email) {
     return NextResponse.json({ error: "Email not found." }, { status: 404 });
   }
@@ -87,7 +87,7 @@ export async function POST(request: Request, { params }: RouteContext) {
       references: email.message_id,
     });
 
-    updateEmailStatus(id, "sent");
+    await updateEmailStatus(id, "sent");
     console.log(`Sent reply for email ${id}: ${email.subject}`);
 
     return NextResponse.json({ id, status: "sent", messageId: info.messageId });

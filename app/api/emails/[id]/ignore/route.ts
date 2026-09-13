@@ -8,14 +8,14 @@ type RouteContext = {
 };
 
 /** Marks an email as ignored so it is excluded from future action. */
-export function POST(_request: Request, { params }: RouteContext) {
+export async function POST(_request: Request, { params }: RouteContext) {
   const id = Number(params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return NextResponse.json({ error: "Email id must be a positive integer." }, { status: 400 });
   }
 
   try {
-    const email = getEmailById(id);
+    const email = await getEmailById(id);
     if (!email) {
       return NextResponse.json({ error: "Email not found." }, { status: 404 });
     }
@@ -26,7 +26,7 @@ export function POST(_request: Request, { params }: RouteContext) {
       );
     }
 
-    return NextResponse.json(updateEmailStatus(id, "ignored"));
+    return NextResponse.json(await updateEmailStatus(id, "ignored"));
   } catch (error) {
     console.error(`Unable to ignore email ${id}.`, error);
     return NextResponse.json({ error: "Email not found." }, { status: 404 });

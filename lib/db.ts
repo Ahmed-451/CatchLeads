@@ -1,20 +1,7 @@
-import Database from "better-sqlite3";
-import path from "node:path";
+import { createClient, type Client, type Row } from "@libsql/client";
 
-export type EmailStatus =
-  | "new"
-  | "classified"
-  | "pending_approval"
-  | "sent"
-  | "ignored";
-
-export type EmailCategory =
-  | "sales_lead"
-  | "support"
-  | "spam"
-  | "newsletter"
-  | "personal"
-  | "other";
+export type EmailStatus = "new" | "classified" | "pending_approval" | "sent" | "ignored";
+export type EmailCategory = "sales_lead" | "support" | "spam" | "newsletter" | "personal" | "other";
 
 export type EmailRow = {
   id: number;
@@ -33,22 +20,8 @@ export type EmailRow = {
   status: EmailStatus;
 };
 
-export type NewEmail = {
-  message_id: string;
-  from_address: string;
-  subject: string;
-  body_snippet: string;
-  received_at: string;
-};
-
-export type EmailClassification = {
-  category: EmailCategory;
-  confidence: number;
-  lead_score: number;
-  company_name: string | null;
-  intent_summary: string | null;
-  reasoning: string;
-};
+export type NewEmail = Pick<EmailRow, "message_id" | "from_address" | "subject" | "body_snippet" | "received_at">;
+export type EmailClassification = Pick<EmailRow, "category" | "confidence" | "lead_score" | "company_name" | "intent_summary" | "reasoning"> & { category: EmailCategory; confidence: number; lead_score: number; reasoning: string };
 
 const CREATE_EMAILS_TABLE = `
   CREATE TABLE IF NOT EXISTS emails (
@@ -69,140 +42,103 @@ const CREATE_EMAILS_TABLE = `
   )
 `;
 
-let db: Database.Database | null = null;
+let client: Client | null = null;
+let schemaInitialization: Promise<void> | null = null;
 
-function dbPath(): string {
-  return process.env.SQLITE_PATH ?? path.join(process.cwd(), "db.sqlite");
+function requiredEnv(name: "TURSO_DATABASE_URL" | "TURSO_AUTH_TOKEN"): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`Missing required environment variable: ${name}`);
+  return value;
 }
 
-export function getDb(): Database.Database {
-  if (!db) {
-    db = new Database(dbPath());
-    db.pragma("journal_mode = WAL");
-    db.exec(CREATE_EMAILS_TABLE);
+function getClient(): Client {
+  if (!client) {
+    client = createClient({ url: requiredEnv("TURSO_DATABASE_URL"), authToken: requiredEnv("TURSO_AUTH_TOKEN") });
   }
-  return db;
+  return client;
 }
 
-function getEmailByMessageId(messageId: string): EmailRow | undefined {
-  return getDb()
-    .prepare("SELECT * FROM emails WHERE message_id = ?")
-    .get(messageId) as EmailRow | undefined;
+/** Runs once per server process; Turso retains the created table permanently. */
+async function ensureSchema(): Promise<void> {
+  if (!schemaInitialization) schemaInitialization = getClient().execute(CREATE_EMAILS_TABLE).then(() => undefined);
+  await schemaInitialization;
 }
 
-/**
- * Inserts a new email with status `new`.
- * If `message_id` already exists, the existing row is returned unchanged.
- */
-export function insertEmail(email: NewEmail): { row: EmailRow; inserted: boolean } {
-  const existing = getEmailByMessageId(email.message_id);
-  if (existing) {
-    return { row: existing, inserted: false };
-  }
+function asString(value: unknown): string { return typeof value === "string" ? value : ""; }
+function asNullableString(value: unknown): string | null { return typeof value === "string" ? value : null; }
+function asNullableNumber(value: unknown): number | null { return typeof value === "number" && Number.isFinite(value) ? value : null; }
 
-  getDb()
-    .prepare(
-      `
-      INSERT INTO emails (
-        message_id, from_address, subject, body_snippet, received_at, status
-      ) VALUES (?, ?, ?, ?, ?, 'new')
-    `,
-    )
-    .run(
-      email.message_id,
-      email.from_address,
-      email.subject,
-      email.body_snippet,
-      email.received_at,
-    );
-
-  const row = getEmailByMessageId(email.message_id);
-  if (!row) {
-    throw new Error(`Failed to insert email ${email.message_id}`);
-  }
-  return { row, inserted: true };
+/** Converts libSQL's generic row values into the app's strongly typed row. */
+function toEmailRow(row: Row): EmailRow {
+  const value = row as Record<string, unknown>;
+  return {
+    id: asNullableNumber(value.id) ?? 0,
+    message_id: asString(value.message_id), from_address: asString(value.from_address),
+    subject: asString(value.subject), body_snippet: asString(value.body_snippet), received_at: asString(value.received_at),
+    category: asNullableString(value.category) as EmailCategory | null,
+    confidence: asNullableNumber(value.confidence), lead_score: asNullableNumber(value.lead_score),
+    company_name: asNullableString(value.company_name), intent_summary: asNullableString(value.intent_summary),
+    reasoning: asNullableString(value.reasoning), draft_reply: asNullableString(value.draft_reply),
+    status: asString(value.status) as EmailStatus,
+  };
 }
 
-export function updateEmailClassification(
-  id: number,
-  classification: EmailClassification,
-): EmailRow {
-  const result = getDb()
-    .prepare(
-      `
-      UPDATE emails
-      SET
-        category = ?,
-        confidence = ?,
-        lead_score = ?,
-        company_name = ?,
-        intent_summary = ?,
-        reasoning = ?,
-        status = 'classified'
-      WHERE id = ?
-    `,
-    )
-    .run(
-      classification.category,
-      classification.confidence,
-      classification.lead_score,
-      classification.company_name,
-      classification.intent_summary,
-      classification.reasoning,
-      id,
-    );
+async function getEmailByMessageId(messageId: string): Promise<EmailRow | undefined> {
+  await ensureSchema();
+  const result = await getClient().execute({ sql: "SELECT * FROM emails WHERE message_id = ?", args: [messageId] });
+  return result.rows[0] ? toEmailRow(result.rows[0]) : undefined;
+}
 
-  if (result.changes === 0) {
-    throw new Error(`No email found with id ${id}`);
-  }
+/** Inserts with `new` status; message_id uniqueness makes repeat syncs idempotent. */
+export async function insertEmail(email: NewEmail): Promise<{ row: EmailRow; inserted: boolean }> {
+  await ensureSchema();
+  const result = await getClient().execute({
+    sql: "INSERT OR IGNORE INTO emails (message_id, from_address, subject, body_snippet, received_at, status) VALUES (?, ?, ?, ?, ?, 'new')",
+    args: [email.message_id, email.from_address, email.subject, email.body_snippet, email.received_at],
+  });
+  const row = await getEmailByMessageId(email.message_id);
+  if (!row) throw new Error(`Failed to insert email ${email.message_id}`);
+  return { row, inserted: result.rowsAffected > 0 };
+}
 
-  const row = getEmailById(id);
-  if (!row) {
-    throw new Error(`No email found with id ${id}`);
-  }
+export async function updateEmailClassification(id: number, classification: EmailClassification): Promise<EmailRow> {
+  await ensureSchema();
+  const result = await getClient().execute({
+    sql: "UPDATE emails SET category = ?, confidence = ?, lead_score = ?, company_name = ?, intent_summary = ?, reasoning = ?, status = 'classified' WHERE id = ?",
+    args: [classification.category, classification.confidence, classification.lead_score, classification.company_name, classification.intent_summary, classification.reasoning, id],
+  });
+  if (result.rowsAffected === 0) throw new Error(`No email found with id ${id}`);
+  const row = await getEmailById(id);
+  if (!row) throw new Error(`No email found with id ${id}`);
   return row;
 }
 
-export function updateEmailDraft(id: number, draftReply: string): EmailRow {
-  const result = getDb()
-    .prepare("UPDATE emails SET draft_reply = ? WHERE id = ?")
-    .run(draftReply, id);
-
-  if (result.changes === 0) {
-    throw new Error(`No email found with id ${id}`);
-  }
-
-  const row = getEmailById(id);
-  if (!row) {
-    throw new Error(`No email found with id ${id}`);
-  }
+export async function updateEmailDraft(id: number, draftReply: string): Promise<EmailRow> {
+  await ensureSchema();
+  const result = await getClient().execute({ sql: "UPDATE emails SET draft_reply = ? WHERE id = ?", args: [draftReply, id] });
+  if (result.rowsAffected === 0) throw new Error(`No email found with id ${id}`);
+  const row = await getEmailById(id);
+  if (!row) throw new Error(`No email found with id ${id}`);
   return row;
 }
 
-export function updateEmailStatus(id: number, status: EmailStatus): EmailRow {
-  const result = getDb()
-    .prepare("UPDATE emails SET status = ? WHERE id = ?")
-    .run(status, id);
-
-  if (result.changes === 0) {
-    throw new Error(`No email found with id ${id}`);
-  }
-
-  const row = getEmailById(id);
-  if (!row) {
-    throw new Error(`No email found with id ${id}`);
-  }
+export async function updateEmailStatus(id: number, status: EmailStatus): Promise<EmailRow> {
+  await ensureSchema();
+  const result = await getClient().execute({ sql: "UPDATE emails SET status = ? WHERE id = ?", args: [status, id] });
+  if (result.rowsAffected === 0) throw new Error(`No email found with id ${id}`);
+  const row = await getEmailById(id);
+  if (!row) throw new Error(`No email found with id ${id}`);
   return row;
 }
 
-export function getAllEmails(): EmailRow[] {
-  return getDb()
-    .prepare("SELECT * FROM emails ORDER BY received_at DESC, id DESC")
-    .all() as EmailRow[];
+export async function getAllEmails(): Promise<EmailRow[]> {
+  await ensureSchema();
+  const result = await getClient().execute("SELECT * FROM emails ORDER BY received_at DESC, id DESC");
+  return result.rows.map(toEmailRow);
 }
 
-export function getEmailById(id: number): EmailRow | undefined {
-  return getDb().prepare("SELECT * FROM emails WHERE id = ?").get(id) as
-    | EmailRow
-    | undefined;
+export async function getEmailById(id: number): Promise<EmailRow | undefined> {
+  await ensureSchema();
+  const result = await getClient().execute({ sql: "SELECT * FROM emails WHERE id = ?", args: [id] });
+  return result.rows[0] ? toEmailRow(result.rows[0]) : undefined;
 }

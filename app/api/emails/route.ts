@@ -4,9 +4,9 @@ import { getAllEmails } from "@/lib/db";
 export const runtime = "nodejs";
 
 /** Returns persisted email rows, ordered newest-first by the database helper. */
-export function GET() {
+export async function GET() {
   try {
-    return NextResponse.json(getAllEmails());
+    return NextResponse.json(await getAllEmails());
   } catch (error) {
     console.error("Unable to load emails.", error);
     return NextResponse.json({ error: "Unable to load emails." }, { status: 500 });
