@@ -11,6 +11,8 @@ import { fetchUnreadEmails } from "@/lib/imap";
 
 // IMAP, SQLite, and the Gemini SDK require Node.js APIs rather than Edge APIs.
 export const runtime = "nodejs";
+// Sync has side effects and must never return a cached response.
+export const dynamic = "force-dynamic";
 
 const BODY_SNIPPET_LENGTH = 5_000;
 const CLASSIFICATION_DELAY_MS = 1_250;

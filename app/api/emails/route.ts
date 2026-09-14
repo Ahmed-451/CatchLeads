@@ -1,8 +1,9 @@
-export const dynamic = 'force-dynamic';
 import { NextResponse } from "next/server";
 import { getAllEmails } from "@/lib/db";
 
 export const runtime = "nodejs";
+// The dashboard must always receive the current Turso rows after a sync.
+export const dynamic = "force-dynamic";
 
 /** Returns persisted email rows, ordered newest-first by the database helper. */
 export async function GET() {
