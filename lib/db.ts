@@ -141,6 +141,16 @@ export async function updateEmailStatus(id: number, status: EmailStatus): Promis
   return row;
 }
 
+/** Permanently removes an email row. This operation cannot be undone. */
+export async function deleteEmail(id: number): Promise<void> {
+  await ensureSchema();
+  const result = await getClient().execute({
+    sql: "DELETE FROM emails WHERE id = ?",
+    args: [id],
+  });
+  if (result.rowsAffected === 0) throw new Error(`No email found with id ${id}`);
+}
+
 export async function getAllEmails(): Promise<EmailRow[]> {
   await ensureSchema();
   const result = await getClient().execute("SELECT * FROM emails ORDER BY received_at DESC, id DESC");

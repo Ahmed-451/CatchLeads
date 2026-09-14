@@ -1,6 +1,7 @@
 "use client";
 
 import { IBM_Plex_Sans, Newsreader } from "next/font/google";
+import { Trash2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 
@@ -91,6 +92,7 @@ export default function Home() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isDismissing, setIsDismissing] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncSummary, setSyncSummary] = useState<SyncSummary | null>(null);
 
@@ -183,6 +185,24 @@ export default function Home() {
     }
   }
 
+  async function deleteEmailRow(id: number) {
+    if (!window.confirm("Delete this email permanently?")) return;
+
+    setError(null);
+    setDeletingId(id);
+    try {
+      const response = await fetch(`/api/emails/${id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error(await errorMessage(response));
+
+      setEmails((current) => current.filter((email) => email.id !== id));
+      if (expandedId === id) setExpandedId(null);
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Could not delete this email.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   return (
     <main style={theme} className={`${plexSans.className} min-h-screen bg-[var(--canvas)] text-[var(--ink)] transition-colors duration-200`}>
       <div className="sticky top-0 z-10 border-b border-[var(--line)] bg-[var(--canvas)]">
@@ -231,7 +251,7 @@ export default function Home() {
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-[900px] w-full border-collapse text-left text-sm">
-              <thead className="border-b border-[var(--line)] text-[var(--slate)]"><tr><th className="px-2 py-3 font-medium">Sender</th><th className="px-2 py-3 font-medium">Subject</th><th className="px-2 py-3 font-medium">Category</th><th className="px-2 py-3 font-medium">Lead score</th><th className="px-2 py-3 font-medium">Status</th><th className="px-2 py-3 text-right font-medium">Received</th></tr></thead>
+              <thead className="border-b border-[var(--line)] text-[var(--slate)]"><tr><th className="px-2 py-3 font-medium">Sender</th><th className="px-2 py-3 font-medium">Subject</th><th className="px-2 py-3 font-medium">Category</th><th className="px-2 py-3 font-medium">Lead score</th><th className="px-2 py-3 font-medium">Status</th><th className="px-2 py-3 text-right font-medium">Received</th><th className="w-10 px-2 py-3"><span className="sr-only">Delete</span></th></tr></thead>
               <tbody>
                 {visibleEmails.map((email) => {
                   const isExpanded = expandedId === email.id;
@@ -245,9 +265,24 @@ export default function Home() {
                         <td className={`px-2 py-4 font-medium ${email.category === "sales_lead" ? "text-[var(--signal)]" : "text-[var(--slate)]"}`}>{email.category === "sales_lead" ? email.lead_score ?? "—" : "—"}</td>
                         <td className="px-2 py-4 text-[var(--slate)]">{email.status.replace("_", " ")}</td>
                         <td className="whitespace-nowrap px-2 py-4 text-right text-[var(--slate)]">{relativeTime(email.received_at)}</td>
+                        <td className="px-2 py-4 text-right">
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void deleteEmailRow(email.id);
+                            }}
+                            disabled={deletingId === email.id}
+                            aria-label={`Delete ${email.subject || "email"}`}
+                            title="Delete permanently"
+                            className="inline-flex h-7 w-7 items-center justify-center text-[var(--slate)] transition hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <Trash2 className="h-4 w-4" strokeWidth={1.6} />
+                          </button>
+                        </td>
                       </tr>
                       {isExpanded && (
-                        <tr className="border-y border-[var(--line)] bg-[var(--surface)]"><td colSpan={6} className="px-6 py-6">
+                        <tr className="border-y border-[var(--line)] bg-[var(--surface)]"><td colSpan={7} className="px-6 py-6">
                           <div className="max-w-4xl space-y-6">
                             <div className="grid gap-5 sm:grid-cols-2"><div><p className="text-sm font-medium text-[var(--ink)]">Intent</p><p className="mt-1 text-sm leading-6 text-[var(--slate)]">{email.intent_summary || "No intent summary available."}</p></div><div><p className="text-sm font-medium text-[var(--ink)]">Reasoning</p><p className="mt-1 text-sm leading-6 text-[var(--slate)]">{email.reasoning || "No reasoning available."}</p></div></div>
                             <div><label htmlFor={`draft-${email.id}`} className="text-sm font-medium text-[var(--ink)]">Reply draft</label><textarea id={`draft-${email.id}`} value={draftBody} onChange={(event) => setDraftBody(event.target.value)} rows={8} className="mt-2 w-full border border-[var(--line)] bg-transparent px-3 py-3 text-sm leading-6 text-[var(--ink)] outline-none focus:border-[var(--ink)]" /></div>
